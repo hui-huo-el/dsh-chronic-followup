@@ -1,0 +1,53 @@
+{
+  "name": "dsh-chronic-followup",
+  "version": "0.1.0",
+  "description": "DSH 技能插件：基层慢病（高血压/糖尿病）公卫随访批量录入助手（浏览器驱动）。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "author": "hui-huo-el",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hui-huo-el/dsh-chronic-followup.git"
+  },
+  "homepage": "https://github.com/hui-huo-el/dsh-chronic-followup#readme",
+  "bugs": {
+    "url": "https://github.com/hui-huo-el/dsh-chronic-followup/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "dsh-skill",
+    "cordis",
+    "chronic-disease",
+    "follow-up",
+    "public-health",
+    "browser-automation"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "files": [
+    "lib/index.js",
+    "skills/**/*.md",
+    "scripts/**/*.{js,mjs}",
+    "examples/**/*.json",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check lib/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.1.2-rc.1"
+    }
+  }
+}
