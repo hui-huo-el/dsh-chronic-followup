@@ -1,0 +1,14 @@
+# 真实患者数据与运行产物，绝不入库
+progress-*.jsonl
+*-progress.jsonl
+worker-status.json
+port.txt
+hs-progress.json
+dm-progress.json
+*.local.json
+.env
+.env.*
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
