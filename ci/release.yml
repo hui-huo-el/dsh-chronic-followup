@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 语法检查
+        run: |
+          node --check lib/index.js
+          for f in scripts/*.mjs scripts/*.js; do node --check "$f"; done
+      - name: 校验包清单
+        run: |
+          node -e "const p=require('./package.json');console.log(p.name+'@'+p.version);if(!p.dsh||!p.dsh.bundle||!p.dsh.bundle.patch)process.exit(1)"
+      - name: 确认无患者数据入库
+        run: |
+          if git ls-files | grep -Ei '(progress.*\.jsonl|worker-status\.json|port\.txt)$'; then
+            echo "::error::检测到运行时/患者数据文件被提交"; exit 1
+          fi
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: 发布到 npm（需 NPM_TOKEN）
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

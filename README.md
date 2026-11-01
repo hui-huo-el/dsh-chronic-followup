@@ -97,6 +97,10 @@ dsh-chronic-followup/
 - 请在取得机构授权、并在合规环境下使用；不要将随访数据导出到非受控位置。
 
 ## 六、自动更新（CI/CD）
+
+> 本仓库当前令牌仅有 `repo` scope，GitHub 禁止经 API 写入 `.github/workflows/**`（404）。
+> 工作流已放在 `ci/release.yml`，按 `ci/README.md` 两步启用即可（网页复制或换带 `workflow` scope 的令牌）。
+
 - **本地改动 → 推送**（无需 git）：
   ```bash
   GH_TOKEN=<你的 token> node scripts/sync-to-github.mjs --owner hui-huo-el --repo dsh-chronic-followup
