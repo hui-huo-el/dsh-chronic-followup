@@ -1,6 +1,6 @@
 {
   "name": "dsh-chronic-followup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH 技能插件：基层慢病（高血压/糖尿病）公卫随访批量录入助手（浏览器驱动）。",
   "type": "module",
   "main": "lib/index.js",
