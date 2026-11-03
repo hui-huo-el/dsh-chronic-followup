@@ -1,4 +1,0 @@
-# Bundle patch layer: loads this package's main entry as a Cordis plugin.
-- insert:
-    - id: dsh-chronic-followup
-      name: "dsh-chronic-followup"

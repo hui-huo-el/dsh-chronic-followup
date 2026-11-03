@@ -91,6 +91,16 @@ try {
 // 3. tree（内联文件内容，避免空仓库/批量 blob 的限制）
 const files = walk(process.cwd());
 const entries = files.map(f => ({ path: f.rel, mode: '100644', type: 'blob', content: fs.readFileSync(f.full, 'utf8') }));
+// 删除远端多余文件（本地已移除的插件外壳等）
+if (headSha) {
+  try {
+    const remote = await api('GET', '/repos/' + OWNER + '/' + REPO + '/git/trees/' + headSha + '?recursive=1');
+    const localSet = new Set(entries.map(e => e.path));
+    for (const item of (remote.tree || [])) {
+      if (item.type === 'blob' && !localSet.has(item.path)) entries.push({ path: item.path, mode: '100644', type: 'blob', sha: null });
+    }
+  } catch (e) {}
+}
 const tree = await api('POST', '/repos/' + OWNER + '/' + REPO + '/git/trees', headSha ? { base_tree: headSha, tree: entries } : { tree: entries });
 const commit = await api('POST', '/repos/' + OWNER + '/' + REPO + '/git/commits', {
   message: MESSAGE,

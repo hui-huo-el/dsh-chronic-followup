@@ -1,9 +1,8 @@
 {
   "name": "dsh-chronic-followup",
-  "version": "0.2.0",
-  "description": "DSH 技能插件：基层慢病（高血压/糖尿病）公卫随访批量录入助手（浏览器驱动）。",
+  "version": "1.0.0",
+  "description": "基层慢病（高血压/糖尿病）随访本地自动化脚本（纯 Node.js，无 AI 依赖）",
   "type": "module",
-  "main": "lib/index.js",
   "license": "MIT",
   "author": "hui-huo-el",
   "repository": {
@@ -29,25 +28,11 @@
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
-  "files": [
-    "lib/index.js",
-    "skills/**/*.md",
-    "scripts/**/*.{js,mjs}",
-    "examples/**/*.json",
-    "cordis.patch.yml",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ],
   "scripts": {
-    "check": "node --check lib/index.js"
+    "start": "node run.js --disease hp --status 快到期 --count 5",
+    "check": "node --check run.js"
   },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "engines": {
-      "dsh": ">=0.1.2-rc.1"
-    }
+  "bin": {
+    "chronic-followup": "run.js"
   }
 }

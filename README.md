@@ -50,7 +50,27 @@ git clone https://github.com/hui-huo-el/dsh-chronic-followup.git
   name: "dsh-chronic-followup"
 ```
 
-## 三、使用
+## 三、使用（独立运行，无需 DSH / 无需 AI）
+
+### 双击运行（推荐）
+1. 首次双击 `run.bat` → 自动拉起 Edge（独立配置目录 `edge-profile/`）；
+2. 在窗口里**手动登录一次**，之后登录态会保留；
+3. 再次双击 `run.bat` 即可开始默认任务（高血压 / 快到期 / 5 人）。
+
+### 命令行运行
+```bash
+node run.js --disease hp --status 快到期 --count 5
+node run.js --disease dm --status 过期 --count 10
+```
+- `--disease`：`hp` 高血压 / `dm` 糖尿病
+- `--status`：`过期` / `快到期`
+- `--count`：本次最多处理人数（遇无匹配患者自动结束）
+- 单人失败自动重试 3 次，仍失败则跳过并写入 `error.log`
+- 控制台每完成一人输出一行：`[进度] 姓名 - 成功/失败 - 耗时`
+
+> 环境地址写死在 `run.js` 顶部 `CONFIG`（`EDGE_PATH` / `DEBUG_PORT` / `BASE_URL`），换环境只改这一处。
+
+## 四、使用（DSH 插件模式，可选）
 
 1. 在 DSH 会话里用 `browser_*` 打开系统并登录：
    ```
