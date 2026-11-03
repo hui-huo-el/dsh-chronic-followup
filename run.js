@@ -8,6 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +19,7 @@ const CONFIG = {
   USER_DATA_DIR: path.join(__dirname, 'edge-profile'),
   BASE_URL: process.env.FOLLOWUP_BASE_URL || 'http://183.204.254.20:8088',
   ROUTE: { hp: '/archives/high-blood-pressure-records', dm: '/archives/diabetes-records' },
-  COL: { hp: { name: 0, last: 7, status: 9, age: 11 }, dm: { name: 0, last: 6, status: 8, age: 10 } },
+  COL: { hp: { name: 0, last: 7, next: 8, status: 9, age: 11 }, dm: { name: 0, last: 6, next: 7, status: 8, age: 10 } },
   LABEL: { hp: '高血压', dm: '糖尿病' },
   FLOW: { hp: 'scripts/flow-hypertension.js', dm: 'scripts/flow-diabetes.js' },
   RETRY: 3,
@@ -31,6 +32,68 @@ const errlog = line => { try { fs.appendFileSync(path.join(__dirname, 'error.log
 function argv(name, fallback) {
   const i = process.argv.indexOf('--' + name);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+}
+
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const ask = q => new Promise(res => rl.question(q, ans => res(String(ans || '').trim())));
+
+function pageText(cdp) {
+  return cdp.ev("(document.body.innerText||'').replace(/\\s+/g,' ')");
+}
+
+async function waitForLogin(cdp) {
+  const isReady = async () => {
+    const txt = await pageText(cdp).catch(() => '');
+    return txt.includes('退出') && (txt.includes('国家基本公共卫生服务系统') || txt.includes('常用系统') || txt.includes('进入系统'));
+  };
+  if (await isReady()) { console.log('已检测到登录态，继续。'); return true; }
+  console.log('⚠️ 请在弹出的浏览器中完成登录，登录成功进入系统首页后，请回到此窗口按【回车键】继续...');
+  let entered = false;
+  const onData = () => { entered = true; };
+  process.stdin.once('data', onData);
+  for (let i = 0; i < 1800; i += 1) {
+    if (entered) break;
+    if (await isReady()) break;
+    await sleep(1000);
+  }
+  process.stdin.removeListener('data', onData);
+  const ok = await isReady();
+  console.log(ok ? '登录确认完成。' : '未检测到登录态，仍按已登录继续（如失败请重跑）。');
+  return ok;
+}
+
+async function ensureSystem(cdp) {
+  await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/#/archives/home' });
+  await sleep(4500);
+  let txt = await pageText(cdp);
+  if (!txt.includes('国家基本公共卫生服务系统')) {
+    const clicked = await cdp.ev("(function(){var bs=[].slice.call(document.querySelectorAll('button'));var b=bs.filter(function(x){return (x.innerText||'').indexOf('进入系统')>=0;})[0];if(b){b.click();return 'ok';}return 'no';})()");
+    if (clicked === 'ok') await sleep(6000);
+    txt = await pageText(cdp);
+  }
+  return txt.includes('国家基本公共卫生服务系统');
+}
+
+async function menu() {
+  console.log('');
+  console.log('请选择任务：');
+  console.log('  1. 高血压 - 快到期');
+  console.log('  2. 高血压 - 过期');
+  console.log('  3. 糖尿病 - 快到期');
+  console.log('  4. 糖尿病 - 过期');
+  console.log('  5. 自定义截止日期（只跑到期日 <= 该日期的患者）');
+  console.log('  6. 全部清空（跑完所有过期和快到期）');
+  for (;;) {
+    const c = await ask('请输入序号(1-6): ');
+    if (c === '5') {
+      let d = '';
+      while (!/^\d{4}-\d{2}-\d{2}$/.test(d)) d = await ask('请输入截止日期 YYYY-MM-DD: ');
+      return { disease: 'both', statuses: ['过期', '快到期'], cutoff: d };
+    }
+    if (c === '6') return { disease: 'both', statuses: ['过期', '快到期'], cutoff: null };
+    const map = { '1': { disease: 'hp', statuses: ['快到期'] }, '2': { disease: 'hp', statuses: ['过期'] }, '3': { disease: 'dm', statuses: ['快到期'] }, '4': { disease: 'dm', statuses: ['过期'] } };
+    if (map[c]) return { ...map[c], cutoff: null };
+  }
 }
 
 function httpGet(url) {
@@ -97,17 +160,22 @@ function exerciseFor(disease, age) {
   return 'keep';
 }
 
-async function runOne(cdp, disease, status) {
+async function runOne(cdp, disease, statuses, cutoff) {
   const c = CONFIG.COL[disease];
-  const READ = "JSON.stringify((function(){var S=" + JSON.stringify([status]) + ";var trs=[].slice.call(document.querySelectorAll('.el-table__body-wrapper tbody tr'));for(var i=0;i<trs.length;i++){var td=[].slice.call(trs[i].querySelectorAll('td'));var tx=td.map(function(x){return (x.textContent||'').replace(/\\s+/g,' ').trim();});var o={idx:i,name:tx[" + c.name + "],last:tx[" + c.last + "],status:tx[" + c.status + "],age:tx[" + c.age + "]};if(o.name&&S.indexOf(o.status)>=0)return o;}return null;})())";
+  const READ = "JSON.stringify((function(){var S=" + JSON.stringify(statuses) + ";var trs=[].slice.call(document.querySelectorAll('.el-table__body-wrapper tbody tr'));var out=[];for(var i=0;i<trs.length;i++){var td=[].slice.call(trs[i].querySelectorAll('td'));var tx=td.map(function(x){return (x.textContent||'').replace(/\\s+/g,' ').trim();});var o={idx:i,name:tx[" + c.name + "],last:tx[" + c.last + "],next:tx[" + c.next + "],status:tx[" + c.status + "],age:tx[" + c.age + "]};if(o.name&&S.indexOf(o.status)>=0)out.push(o);}return out;})())";
   await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/?t=' + Date.now() + '#' + CONFIG.ROUTE[disease] });
   await sleep(4500);
-  let raw = 'null';
-  for (let a = 0; a < 6 && (!raw || raw === 'null'); a += 1) {
+  let rows = [];
+  for (let a = 0; a < 6 && !rows.length; a += 1) {
     await cdp.ev("(function(){var b=[].slice.call(document.querySelectorAll('button')).filter(function(x){return (x.innerText||'').trim()==='查询';})[0];if(b)b.click();return 'ok';})()");
-    for (let k = 0; k < 8 && (!raw || raw === 'null'); k += 1) { await sleep(900); raw = await cdp.ev(READ); }
+    for (let k = 0; k < 8 && !rows.length; k += 1) { await sleep(900); rows = JSON.parse((await cdp.ev(READ)) || '[]'); }
   }
-  const row = JSON.parse(raw || 'null');
+  if (!rows.length) return { done: true, name: '-' };
+  let row = null;
+  for (const r of rows) {
+    if (cutoff && r.next && String(r.next) > cutoff) continue;
+    row = r; break;
+  }
   if (!row) return { done: true, name: '-' };
   const clicked = await cdp.ev("(function(o){var trs=[].slice.call(document.querySelectorAll('.el-table__body-wrapper tbody tr'));var tr=trs[o.idx];var a=tr&&tr.querySelector('a.cli-btn');if(!a)return 'no';a.click();return 'ok';})(" + JSON.stringify({ idx: row.idx }) + ")");
   if (clicked !== 'ok') throw new Error('无法打开患者档案');
@@ -122,36 +190,58 @@ async function runOne(cdp, disease, status) {
   return { done: false, name: row.name };
 }
 
-async function main() {
-  const disease = (argv('disease', 'hp') || 'hp').toLowerCase();
-  const status = argv('status', '快到期');
-  const count = Math.max(1, Number(argv('count', 5)));
-  if (!CONFIG.ROUTE[disease]) throw new Error('--disease 只能是 hp 或 dm');
-
-  await ensureBrowser();
-  const cdp = await connect();
+async function runTask(cdp, disease, statuses, cutoff, maxCount) {
   let ok = 0, fail = 0;
-  log('目标: ' + CONFIG.LABEL[disease] + ' / ' + status + ' / 最多 ' + count + ' 人');
-  for (let i = 0; i < count; i += 1) {
+  for (let i = 0; i < maxCount; i += 1) {
     const t0 = Date.now();
     let name = '-', success = false, lastErr = '';
-    for (let attempt = 1; attempt <= CONFIG.RETRY; attempt += 1) {
+    for (let a = 1; a <= CONFIG.RETRY; a += 1) {
       try {
-        const r = await runOne(cdp, disease, status);
-        name = r.name;
-        if (r.done) { log('[进度] 无更多' + status + '患者 - 结束'); cdp.ws.close(); log('完成: 成功 ' + ok + ' / 失败 ' + fail); return; }
-        success = true; break;
+        const r = await runOne(cdp, disease, statuses, cutoff);
+        if (r.done) { console.log('[进度] ' + CONFIG.LABEL[disease] + ' 无更多匹配患者 - 结束'); return { ok, fail, empty: true }; }
+        name = r.name; success = true; break;
       } catch (e) {
         lastErr = String((e && e.message) || e);
-        await sleep(1500);
+        await sleep(1200);
       }
     }
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
-    if (success) { ok += 1; log('[进度] ' + name + ' - 成功 - ' + secs + 's'); }
-    else { fail += 1; log('[进度] ' + name + ' - 失败(已跳过) - ' + secs + 's'); errlog(name + ' | ' + lastErr); }
+    if (success) { ok += 1; console.log('[进度] ' + name + ' - 成功 - ' + secs + 's'); }
+    else { fail += 1; console.log('[进度] ' + name + ' - 失败(已跳过) - ' + secs + 's'); errlog(name + ' | ' + lastErr); }
   }
-  cdp.ws.close();
-  log('完成: 成功 ' + ok + ' / 失败 ' + fail + ' （错误详见 error.log）');
+  return { ok, fail, empty: false };
 }
 
-main().catch(e => { log('启动失败: ' + String((e && e.message) || e)); process.exit(1); });
+async function main() {
+  let task = null;
+  if (process.argv.includes('--disease')) {
+    const d = (argv('disease', 'hp') || 'hp').toLowerCase();
+    task = { disease: d === 'both' ? 'both' : d, statuses: [argv('status', '快到期')], cutoff: argv('cutoff', '') || null };
+  }
+
+  await ensureBrowser();
+  const cdp = await connect();
+  await ensureSystem(cdp);
+  await waitForLogin(cdp);
+
+  if (!task) task = await menu();
+
+  let maxCount = Number(argv('count', 0));
+  if (!maxCount) {
+    const a = await ask('本次最大人数（直接回车默认 10 人）: ');
+    maxCount = Number(a) > 0 ? Number(a) : 10;
+  }
+
+  const diseases = task.disease === 'both' ? ['hp', 'dm'] : [task.disease];
+  let totalOk = 0, totalFail = 0;
+  for (const d of diseases) {
+    console.log('== 开始 ' + CONFIG.LABEL[d] + ' / ' + task.statuses.join('+') + (task.cutoff ? ' / 截止 ' + task.cutoff : '') + ' / 上限 ' + maxCount + ' 人 ==');
+    const r = await runTask(cdp, d, task.statuses, task.cutoff, maxCount);
+    totalOk += r.ok; totalFail += r.fail;
+  }
+  cdp.ws.close();
+  rl.close();
+  console.log('完成: 成功 ' + totalOk + ' / 失败 ' + totalFail + '（错误详见 error.log）');
+}
+
+main().catch(e => { console.log('启动失败: ' + String((e && e.message) || e)); try { rl.close(); } catch (x) {} process.exit(1); });
