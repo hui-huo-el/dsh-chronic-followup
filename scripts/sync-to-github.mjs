@@ -19,7 +19,7 @@ const REPO = arg('repo');
 if (!OWNER || !REPO) { console.error('usage: --owner <owner> --repo <repo> [--private]'); process.exit(1); }
 const MESSAGE = arg('message', 'chore: sync from local workspace ' + new Date().toISOString());
 
-const EXCLUDE = /^(node_modules|\.git)(\\|$)|^\.github\/workflows\/|progress-.*\.jsonl$|worker-status\.json$|port\.txt$|\.env/i;
+const EXCLUDE = /^(node_modules|\.git)(\\|$)|^\.github\/workflows\/|(^|\/)[a-z]*-?progress\.jsonl$|worker-status\.json$|port\.txt$|edge-profile\/|error\.log$|\.env/i;
 
 async function api(method, url, body) {
   const payload = body ? JSON.stringify(body) : null;
