@@ -4,11 +4,12 @@
  * 用法: node run.js --disease hp|dm --status 过期|快到期 --count 5
  * 首次运行：会自动拉起 Edge，请在窗口里手动登录一次，登录态保存在 edge-profile/。
  */
-'use strict';
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
-const { spawn } = require('node:child_process');
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ==== 固定配置（如需换环境只改这里）====
 const CONFIG = {
