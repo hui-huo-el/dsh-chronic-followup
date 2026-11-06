@@ -39,50 +39,103 @@ function argv(name, fallback) {
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const ask = q => new Promise(res => rl.question(q, ans => res(String(ans || '').trim())));
 
+function isSystemUrl(u) {
+  if (typeof u !== 'string') return false;
+  const host = new URL(CONFIG.BASE_URL).host;
+  return u.includes(host) && (u.includes('/home') || u.includes('/archives') || u.includes('/main'));
+}
+
+function looksLoggedIn(txt) {
+  if (!txt) return false;
+  return txt.includes('退出') || txt.includes('国家基本公共卫生') || txt.includes('档案名册');
+}
+
+async function waitSystem(cdp, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const u = await cdp.ev('location.href').catch(() => '');
+    if (isSystemUrl(u)) return true;
+    const txt = await pageText(cdp).catch(() => '');
+    if (looksLoggedIn(txt)) return true;
+    await sleep(800);
+  }
+  return false;
+}
+
 function pageText(cdp) {
   return cdp.ev("(document.body.innerText||'').replace(/\\s+/g,' ')");
 }
 
 async function waitForLogin(cdp) {
-  const isReady = async () => {
+  const ready = async () => {
+    const u = await cdp.ev('location.href').catch(() => '');
+    if (isSystemUrl(u)) return true;
     const txt = await pageText(cdp).catch(() => '');
-    return txt.includes('退出') && txt.includes('国家基本公共卫生服务系统');
+    return looksLoggedIn(txt);
   };
-  if (await isReady()) { console.log('已检测到登录态，继续。'); return true; }
+  if (await ready()) { console.log('已检测到登录态，继续。'); return true; }
   console.log('⚠️ 请在弹出的浏览器中完成登录，登录成功进入系统首页后，请回到此窗口按【回车键】继续...');
   let entered = false;
   const onData = () => { entered = true; };
   process.stdin.once('data', onData);
   for (let i = 0; i < 1800; i += 1) {
     if (entered) break;
-    if (await isReady()) break;
+    if (await ready()) break;
     await sleep(1000);
   }
   process.stdin.removeListener('data', onData);
-  const ok = await isReady();
+  const ok = await ready();
   console.log(ok ? '登录确认完成。' : '未检测到登录态，仍按已登录继续（如失败请重跑）。');
   return ok;
 }
 
+async function findLoggedInPage() {
+  const pages = await listPages();
+  for (const p of pages) {
+    if (!p.webSocketDebuggerUrl) continue;
+    const c = await attach(p.webSocketDebuggerUrl).catch(() => null);
+    if (!c) continue;
+    const u = await c.ev('location.href').catch(() => '');
+    if (isSystemUrl(u)) return c;
+    const txt = await pageText(c).catch(() => '');
+    if (looksLoggedIn(txt)) return c;
+    try { c.ws.close(); } catch (e) {}
+  }
+  return null;
+}
+
 async function ensureSystem(cdp) {
   const host = new URL(CONFIG.BASE_URL).host;
-  await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/#/archives/home' });
-  await sleep(4500);
-  let txt = await pageText(cdp);
-  if (txt.includes('国家基本公共卫生服务系统')) return cdp;
-  // 平台二级页：点「进入系统」（可能在新标签页打开）
-  await cdp.ev("(function(){var bs=[].slice.call(document.querySelectorAll('button'));var b=bs.filter(function(x){return (x.innerText||'').indexOf('进入系统')>=0;})[0];if(b){b.click();return 'ok';}return 'no';})()");
-  for (let i = 0; i < 15; i += 1) {
-    await sleep(1200);
-    const pages = await listPages();
-    const target = pages.find(p => (p.url || '').includes(host));
-    if (!target) continue;
-    const next = await attach(target.webSocketDebuggerUrl).catch(() => null);
-    if (!next) continue;
-    const body = await pageText(next).catch(() => '');
-    if (body.includes('国家基本公共卫生服务系统')) return next;
+  const existing = await findLoggedInPage();
+  if (existing) {
+    const u = await existing.ev('location.href').catch(() => '');
+    if (isSystemUrl(u)) return existing;
   }
-  throw new Error('未能进入基本公共卫生系统，请先在浏览器中登录并进入系统后重试');
+  await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/#/archives/home' }).catch(() => {});
+  await sleep(2000);
+  if (await waitSystem(cdp, 10000)) return cdp;
+
+  // 平台二级页：点「进入系统」（可能新开标签页）
+  await cdp.ev("(function(){var els=[].slice.call(document.querySelectorAll('button,a'));var x=els.filter(function(b){return (b.innerText||'').indexOf('进入系统')>=0;})[0];if(x){x.click();return 'ok';}return 'no';})()").catch(() => 'no');
+
+  for (let i = 0; i < 20; i += 1) {
+    await sleep(1000);
+    const pages = await listPages();
+    const cands = pages.filter(p => (p.url || '').includes(host));
+    for (const p of cands) {
+      const c = await attach(p.webSocketDebuggerUrl).catch(() => null);
+      if (!c) continue;
+      if (await waitSystem(c, 2500)) return c;
+    }
+  }
+
+  // 兜底：只要页面已登录就继续（避免误判卡死）
+  const txt = await pageText(cdp).catch(() => '');
+  if (looksLoggedIn(txt)) {
+    console.warn('未确认到公卫系统首页，但检测到登录态，继续执行。');
+    return cdp;
+  }
+  throw new Error('未能进入基本公共卫生系统：请确认浏览器已在 ' + CONFIG.BASE_URL + ' 登录并进入系统；若已登录仍报错，请关闭多余空白标签页后重试（脚本会优先选中已登录标签页）');
 }
 
 async function menu() {
@@ -159,9 +212,12 @@ async function listPages() {
 }
 
 async function connect() {
+  const host = new URL(CONFIG.BASE_URL).host;
   const pages = await listPages();
   if (!pages.length) throw new Error('没有可用标签页');
-  return attach(pages[0].webSocketDebuggerUrl);
+  const sys = pages.filter(p => (p.url || '').includes(host) && p.url !== 'about:blank');
+  const pick = sys.find(p => isSystemUrl(p.url)) || sys[0] || pages.find(p => p.url !== 'about:blank') || pages[0];
+  return attach(pick.webSocketDebuggerUrl);
 }
 
 function pickDate(last, today = new Date()) {
