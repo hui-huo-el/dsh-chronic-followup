@@ -17,7 +17,7 @@ const CONFIG = {
   EDGE_PATH: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   DEBUG_PORT: Number(process.env.CDP_PORT) || 9222,
   USER_DATA_DIR: path.join(__dirname, 'edge-profile'),
-  BASE_URL: process.env.FOLLOWUP_BASE_URL || 'http://183.204.254.20:8088',
+  BASE_URL: process.env.FOLLOWUP_BASE_URL || 'http://183.204.254.22:38888',
   ROUTE: { hp: '/archives/high-blood-pressure-records', dm: '/archives/diabetes-records' },
   COL: { hp: { name: 0, last: 7, next: 8, status: 9, age: 11 }, dm: { name: 0, last: 6, next: 7, status: 8, age: 10 } },
   LABEL: { hp: '高血压', dm: '糖尿病' },
@@ -41,13 +41,14 @@ const ask = q => new Promise(res => rl.question(q, ans => res(String(ans || '').
 
 function isSystemUrl(u) {
   if (typeof u !== 'string') return false;
-  const host = new URL(CONFIG.BASE_URL).host;
-  return u.includes(host) && (u.includes('/home') || u.includes('/archives') || u.includes('/main'));
+  if (/passport|login|signin/i.test(u)) return false;
+  // 不校验 IP/端口：只要命中系统内页特征即视为已登录态
+  return /#\/(workbench|archives|main|subsystem|high-followup|diabetes-followup)/i.test(u) || u.includes('#/');
 }
 
 function looksLoggedIn(txt) {
   if (!txt) return false;
-  return txt.includes('退出') || txt.includes('国家基本公共卫生') || txt.includes('档案名册');
+  return txt.includes('退出') || txt.includes('国家基本公共卫生') || txt.includes('档案名册') || txt.includes('待办事项') || txt.includes('常用系统');
 }
 
 async function waitSystem(cdp, ms) {
