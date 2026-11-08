@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ==== 固定配置（如需换环境只改这里）====
+let SHARED_CDP = null;
+
 const CONFIG = {
   EDGE_PATH: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   DEBUG_PORT: Number(process.env.CDP_PORT) || 9222,
@@ -243,8 +245,18 @@ function exerciseFor(disease, age) {
   return 'keep';
 }
 
+async function waitText(cdp, txt, ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const ok = await cdp.ev("(function(){var t=((document.body&&document.body.innerText)||'');return t.indexOf(" + JSON.stringify(txt) + ")>=0;})()").catch(() => false);
+    if (ok) return true;
+    await sleep(250);
+  }
+  return false;
+}
+
 async function clickLabel(cdp, labels) {
-  const expr = "(function(L){var els=[].slice.call(document.querySelectorAll('a,li,div,span,button,.el-menu-item,.el-submenu__title'));var hit=null;for(var i=0;i<els.length;i++){var e=els[i];if(!e.offsetParent)continue;var tx=(e.innerText||'').trim();if(!tx)continue;for(var j=0;j<L.length;j++){if(tx.indexOf(L[j])>=0){if(!hit||tx.length<hit.len)hit={el:e,len:tx.length};break;}}}if(!hit)return 'no';hit.el.click();return 'ok';})(" + JSON.stringify(labels) + ")";
+  const expr = "(function(L){var els=[].slice.call(document.querySelectorAll('a,li,div,span,button,.el-menu-item,.el-submenu__title'));var hit=null;for(var i=0;i<els.length;i++){var e=els[i];if(!e.getClientRects().length)continue;var tx=(e.innerText||'').trim();if(!tx)continue;for(var j=0;j<L.length;j++){if(tx.indexOf(L[j])>=0){if(!hit||tx.length<hit.len)hit={el:e,len:tx.length};break;}}}if(!hit)return 'no';hit.el.click();return 'ok';})(" + JSON.stringify(labels) + ")";
   return cdp.ev(expr).catch(() => 'no');
 }
 
@@ -273,24 +285,66 @@ async function waitSel(cdp, sel, ms, desc) {
 }
 
 // 模拟点击进入名册（严禁改 hash / Page.navigate 跳子页）
+async function reattachSystemPage() {
+  const host = new URL(CONFIG.BASE_URL).host;
+  const pages = await listPages();
+  const cands = pages.filter(p => (p.url || '').includes(host) || (p.url || '').includes('183.204'));
+  for (const p of cands) {
+    const c = await attach(p.webSocketDebuggerUrl).catch(() => null);
+    if (!c) continue;
+    const txt = await pageText(c).catch(() => '');
+    if (txt.includes('国家基本公共卫生服务系统') || txt.includes('档案名册')) return c;
+    try { c.ws.close(); } catch (err) {}
+  }
+  return null;
+}
+
 async function openRosterByMenu(cdp, disease) {
   const label = CONFIG.LABEL[disease];
   const roster = label + '档案名册';
-  await clickLabel(cdp, ['首页', '工作台']);
-  await sleep(1200);
-  await waitSel(cdp, '.el-menu, .el-menu-item, .menu-item', 10000, '主菜单');
-  await clickLabel(cdp, ['基本公卫管理', '基本公共卫生']);
-  await sleep(1500);
-  let r = await clickLabel(cdp, [roster]);
-  if (r !== 'ok') {
-    await clickLabel(cdp, ['慢病管理']);
-    await sleep(1500);
-    r = await clickLabel(cdp, [label + '随访', roster]);
+  const has = async () => (await cdp.ev("((document.body&&document.body.innerText)||'').indexOf(" + JSON.stringify(roster) + ")>=0").catch(() => false)) === true;
+
+  for (let i = 0; i < 10; i += 1) {
+    if (!(await has())) {
+      // 表单页/患者页：先关闭回到名册页，并等待菜单渲染完成
+      if ((await clickLabel(cdp, ['关闭'])) === 'ok') {
+        await sleep(1000);
+        await waitText(cdp, roster, 8000);
+      }
+    }
+    if (!(await has())) {
+      if ((await clickLabel(cdp, ['首页', '工作台'])) === 'ok') {
+        await sleep(1000);
+        await waitText(cdp, roster, 8000);
+      }
+    }
+    if (!(await has())) {
+      await clickLabel(cdp, ['业务中心']);
+      await sleep(1500);
+      await clickLabel(cdp, ['基本公共卫生服务系统', '进入系统']);
+      await waitText(cdp, '国家基本公共卫生服务系统', 10000);
+      const nx = await reattachSystemPage();
+      if (nx) { cdp = nx; SHARED_CDP = nx; }
+      await waitText(cdp, roster, 8000);
+    }
+    if (!(await has())) {
+      await clickLabel(cdp, ['基本公卫管理']);
+      await sleep(1200);
+      await waitText(cdp, roster, 6000);
+    }
+    if (await has()) {
+      const clk = await clickLabel(cdp, [roster]);
+      if (clk === 'ok') {
+        await sleep(1200);
+        // 等表格与查询按钮完全渲染
+        const ready = await waitText(cdp, '查询', 10000);
+        await waitSel(cdp, '.el-table, .el-table__body-wrapper', 12000, '名册表格').catch(() => {});
+        if (ready && !(await hasBlankFuse(cdp))) return cdp;
+      }
+    }
+    await sleep(1000);
   }
-  if (r !== 'ok') throw new Error('页面疑似白屏，请手动刷新（未找到「' + roster + '」菜单）');
-  await sleep(1500);
-  await waitSel(cdp, '.el-table, .el-form-item, .el-table__body-wrapper', 10000, '名册表格');
-  if (await hasBlankFuse(cdp)) throw new Error('页面疑似白屏，请手动刷新（名册为空）');
+  throw new Error('页面疑似白屏，请手动刷新（多次尝试仍未找到「' + roster + '」菜单）');
 }
 
 async function runOne(cdp, disease, statuses, cutoff) {
@@ -298,7 +352,8 @@ async function runOne(cdp, disease, statuses, cutoff) {
   const c = CONFIG.COL[disease];
   const READ = "JSON.stringify((function(){var S=" + JSON.stringify(statuses) + ";var trs=[].slice.call(document.querySelectorAll('.el-table__body-wrapper tbody tr'));var out=[];for(var i=0;i<trs.length;i++){var td=[].slice.call(trs[i].querySelectorAll('td'));var tx=td.map(function(x){return (x.textContent||'').replace(/\\s+/g,' ').trim();});var o={idx:i,name:tx[" + c.name + "],last:tx[" + c.last + "],next:tx[" + c.next + "],status:tx[" + c.status + "],age:tx[" + c.age + "]};if(o.name&&S.indexOf(o.status)>=0)out.push(o);}return out;})())";
   let t0 = Date.now();
-  await openRosterByMenu(cdp, disease);
+  cdp = await openRosterByMenu(cdp, disease);
+  if (SHARED_CDP) cdp = SHARED_CDP;
   T.nav = Date.now() - t0;
   t0 = Date.now();
   let rows = [];
@@ -327,7 +382,7 @@ async function runOne(cdp, disease, statuses, cutoff) {
   const out = await cdp.ev('window.__followup(' + JSON.stringify(params) + ')');
   T.flow = Date.now() - t0;
   if (!out || !out.ok) throw new Error((out && out.why) || '保存失败');
-  return { done: false, name: row.name, timings: T };
+  return { done: false, name: row.name, timings: T, cdp };
 }
 
 async function runTask(cdp, disease, statuses, cutoff, maxCount, timing) {
@@ -338,6 +393,7 @@ async function runTask(cdp, disease, statuses, cutoff, maxCount, timing) {
     for (let a = 1; a <= CONFIG.RETRY; a += 1) {
       try {
         const r = await runOne(cdp, disease, statuses, cutoff);
+        if (r && r.cdp) cdp = r.cdp;
         if (r.done) { console.log('[进度] ' + CONFIG.LABEL[disease] + ' 无更多匹配患者 - 结束'); return { ok, fail, empty: true }; }
         name = r.name; timings = r.timings; success = true; break;
       } catch (e) {
