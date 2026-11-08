@@ -112,7 +112,10 @@ async function ensureSystem(cdp) {
     const u = await existing.ev('location.href').catch(() => '');
     if (isSystemUrl(u)) return existing;
   }
-  await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/#/archives/home' }).catch(() => {});
+  const u0 = await cdp.ev('location.href').catch(() => '');
+  if (!isSystemUrl(u0) && !looksLoggedIn(await pageText(cdp).catch(() => ''))) {
+    await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/' }).catch(() => {});   // 只落到站点根
+  }
   await sleep(2000);
   if (await waitSystem(cdp, 10000)) return cdp;
 
@@ -185,7 +188,7 @@ async function ensureBrowser() {
     '--remote-debugging-port=' + CONFIG.DEBUG_PORT,
     '--user-data-dir=' + CONFIG.USER_DATA_DIR,
     '--no-first-run', '--no-default-browser-check',
-    CONFIG.BASE_URL + '/#/archives/home',
+    CONFIG.BASE_URL + '/',
   ], { detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i += 1) {
     await sleep(1000);
@@ -240,13 +243,62 @@ function exerciseFor(disease, age) {
   return 'keep';
 }
 
+async function clickLabel(cdp, labels) {
+  const expr = "(function(L){var els=[].slice.call(document.querySelectorAll('a,li,div,span,button,.el-menu-item,.el-submenu__title'));var hit=null;for(var i=0;i<els.length;i++){var e=els[i];if(!e.offsetParent)continue;var tx=(e.innerText||'').trim();if(!tx)continue;for(var j=0;j<L.length;j++){if(tx.indexOf(L[j])>=0){if(!hit||tx.length<hit.len)hit={el:e,len:tx.length};break;}}}if(!hit)return 'no';hit.el.click();return 'ok';})(" + JSON.stringify(labels) + ")";
+  return cdp.ev(expr).catch(() => 'no');
+}
+
+async function pageLen(cdp) {
+  return cdp.ev('((document.body && document.body.innerText)||"").trim().length').catch(() => 0);
+}
+
+async function hasBlankFuse(cdp) {
+  const len = await pageLen(cdp);
+  if (len < 30) return true;
+  const menus = await cdp.ev("document.querySelectorAll('.el-menu-item,.el-submenu__title,.menu-item,button').length").catch(() => 0);
+  return !menus;
+}
+
+// 等待元素（10s），超时刷新一次重试；仍失败按白屏熔断
+async function waitSel(cdp, sel, ms, desc) {
+  const once = () => cdp.ev('new Promise(function(res){var t0=Date.now();var tick=function(){var ok=document.querySelector(' + JSON.stringify(sel) + ');var len=((document.body && document.body.innerText)||"").trim().length;if(ok&&len>=20)return res("ok");if(Date.now()-t0>' + ms + ')return res("timeout");setTimeout(tick,300);};tick();})').catch(() => 'timeout');
+  if ((await once()) === 'ok') return true;
+  if (await hasBlankFuse(cdp)) throw new Error('页面疑似白屏，请手动刷新（' + (desc || sel) + '）');
+  console.log('等待 ' + (desc || sel) + ' 超时，刷新页面重试一次...');
+  await cdp.ev('location.reload()').catch(() => {});
+  await sleep(4000);
+  if ((await once()) === 'ok') return true;
+  if (await hasBlankFuse(cdp)) throw new Error('页面疑似白屏，请手动刷新（刷新后仍未加载：' + (desc || sel) + '）');
+  throw new Error('页面加载超时（' + (desc || sel) + '）');
+}
+
+// 模拟点击进入名册（严禁改 hash / Page.navigate 跳子页）
+async function openRosterByMenu(cdp, disease) {
+  const label = CONFIG.LABEL[disease];
+  const roster = label + '档案名册';
+  await clickLabel(cdp, ['首页', '工作台']);
+  await sleep(1200);
+  await waitSel(cdp, '.el-menu, .el-menu-item, .menu-item', 10000, '主菜单');
+  await clickLabel(cdp, ['基本公卫管理', '基本公共卫生']);
+  await sleep(1500);
+  let r = await clickLabel(cdp, [roster]);
+  if (r !== 'ok') {
+    await clickLabel(cdp, ['慢病管理']);
+    await sleep(1500);
+    r = await clickLabel(cdp, [label + '随访', roster]);
+  }
+  if (r !== 'ok') throw new Error('页面疑似白屏，请手动刷新（未找到「' + roster + '」菜单）');
+  await sleep(1500);
+  await waitSel(cdp, '.el-table, .el-form-item, .el-table__body-wrapper', 10000, '名册表格');
+  if (await hasBlankFuse(cdp)) throw new Error('页面疑似白屏，请手动刷新（名册为空）');
+}
+
 async function runOne(cdp, disease, statuses, cutoff) {
   const T = { nav: 0, query: 0, open: 0, form: 0, flow: 0 };
   const c = CONFIG.COL[disease];
   const READ = "JSON.stringify((function(){var S=" + JSON.stringify(statuses) + ";var trs=[].slice.call(document.querySelectorAll('.el-table__body-wrapper tbody tr'));var out=[];for(var i=0;i<trs.length;i++){var td=[].slice.call(trs[i].querySelectorAll('td'));var tx=td.map(function(x){return (x.textContent||'').replace(/\\s+/g,' ').trim();});var o={idx:i,name:tx[" + c.name + "],last:tx[" + c.last + "],next:tx[" + c.next + "],status:tx[" + c.status + "],age:tx[" + c.age + "]};if(o.name&&S.indexOf(o.status)>=0)out.push(o);}return out;})())";
   let t0 = Date.now();
-  await cdp.send('Page.navigate', { url: CONFIG.BASE_URL + '/?t=' + Date.now() + '#' + CONFIG.ROUTE[disease] });
-  await sleep(4500);
+  await openRosterByMenu(cdp, disease);
   T.nav = Date.now() - t0;
   t0 = Date.now();
   let rows = [];
