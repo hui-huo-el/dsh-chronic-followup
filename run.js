@@ -14,6 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ==== 固定配置（如需换环境只改这里）====
 let SHARED_CDP = null;
+let LAUNCHED_EDGE_PID = null;
 
 const CONFIG = {
   EDGE_PATH: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -25,8 +26,8 @@ const CONFIG = {
   LABEL: { hp: '高血压', dm: '糖尿病' },
   FLOW: { hp: 'scripts/flow-hypertension.js', dm: 'scripts/flow-diabetes.js' },
   RETRY: 3,
-  MIN_WAIT: 20,   // 保存成功后最小等待秒数（防风控）
-  MAX_WAIT: 35,   // 保存成功后最大等待秒数
+  MIN_WAIT: 8,   // 保存成功后最小等待秒数（防风控）
+  MAX_WAIT: 12,   // 保存成功后最大等待秒数
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -158,9 +159,9 @@ async function menu() {
     const c = await ask('请输入序号(1-7): ');
     const simple = {
       '1': { disease: 'hp', statuses: ['快到期'] },
-      '2': { disease: 'hp', statuses: ['过期'] },
+      '2': { disease: 'hp', statuses: ['过期'], auto: true },
       '3': { disease: 'dm', statuses: ['快到期'] },
-      '4': { disease: 'dm', statuses: ['过期'] },
+      '4': { disease: 'dm', statuses: ['过期'], auto: true },
       '7': { disease: 'both', statuses: ['过期', '快到期'] },
     };
     if (simple[c]) return { ...simple[c], cutoff: null };
@@ -186,12 +187,14 @@ async function ensureBrowser() {
     await sleep(1000);
   }
   if (!fs.existsSync(CONFIG.EDGE_PATH)) throw new Error('未找到 Edge: ' + CONFIG.EDGE_PATH);
-  spawn(CONFIG.EDGE_PATH, [
+  const edgeChild = spawn(CONFIG.EDGE_PATH, [
     '--remote-debugging-port=' + CONFIG.DEBUG_PORT,
     '--user-data-dir=' + CONFIG.USER_DATA_DIR,
     '--no-first-run', '--no-default-browser-check',
     CONFIG.BASE_URL + '/',
-  ], { detached: true, stdio: 'ignore' }).unref();
+  ], { detached: true, stdio: 'ignore' });
+  edgeChild.unref();
+  LAUNCHED_EDGE_PID = edgeChild.pid;
   for (let i = 0; i < 30; i += 1) {
     await sleep(1000);
     if (await httpGet('http://127.0.0.1:' + CONFIG.DEBUG_PORT + '/json/version')) return true;
@@ -215,6 +218,17 @@ async function attach(wsUrl) {
 
 async function listPages() {
   return JSON.parse(await httpGet('http://127.0.0.1:' + CONFIG.DEBUG_PORT + '/json/list') || '[]').filter(t => t.type === 'page');
+}
+
+function closeLaunchedBrowser() {
+  if (!LAUNCHED_EDGE_PID) return;
+  try {
+    const { spawnSync } = require('node:child_process');
+    spawnSync('taskkill', ['/PID', String(LAUNCHED_EDGE_PID), '/T', '/F'], { timeout: 10000 });
+  } catch (e) {
+    try { process.kill(LAUNCHED_EDGE_PID); } catch (err) {}
+  }
+  LAUNCHED_EDGE_PID = null;
 }
 
 async function connect() {
@@ -419,6 +433,7 @@ async function runTask(cdp, disease, statuses, cutoff, maxCount, timing) {
 }
 
 async function main() {
+  try {
   let task = null;
   if (process.argv.includes('--disease')) {
     const d = (argv('disease', 'hp') || 'hp').toLowerCase();
@@ -434,8 +449,13 @@ async function main() {
 
   let maxCount = Number(argv('count', 0));
   if (!maxCount) {
-    const a = await ask('本次最大人数（直接回车默认 10 人）: ');
-    maxCount = Number(a) > 0 ? Number(a) : 10;
+    if (task.auto) {
+      maxCount = 9999;
+      console.log('「过期」分类：不限制人数，自动跑到清空为止。');
+    } else {
+      const a = await ask('本次最大人数（直接回车默认 10 人）: ');
+      maxCount = Number(a) > 0 ? Number(a) : 10;
+    }
   }
 
   const diseases = task.disease === 'both' ? ['hp', 'dm'] : [task.disease];
@@ -448,6 +468,15 @@ async function main() {
   cdp.ws.close();
   rl.close();
   console.log('完成: 成功 ' + totalOk + ' / 失败 ' + totalFail + '（错误详见 error.log）');
+    // 全部任务结束
+  } catch (e) {
+    console.log('执行中断: ' + String((e && e.message) || e));
+  } finally {
+    closeLaunchedBrowser();
+    console.log('已清理脚本启动的浏览器进程。');
+  }
 }
 
-main().catch(e => { console.log('启动失败: ' + String((e && e.message) || e)); try { rl.close(); } catch (x) {} process.exit(1); });
+process.on('SIGINT', () => { closeLaunchedBrowser(); process.exit(0); });
+
+main().catch(e => { closeLaunchedBrowser(); console.log('启动失败: ' + String((e && e.message) || e)); try { rl.close(); } catch (x) {} process.exitCode = 1; });
