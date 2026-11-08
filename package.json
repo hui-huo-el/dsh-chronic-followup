@@ -34,5 +34,10 @@
   },
   "bin": {
     "chronic-followup": "run.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }
